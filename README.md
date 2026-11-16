@@ -43,7 +43,7 @@ TOML configuration, sealed subject-data vault, and SSE session events.
 ```sh
 cargo build --release -p siros-issuer-service
 
-SIROS_ISSUER_CONFIG=config.toml ./target/release/siros-issuer-service
+./target/release/siros-issuer-service config.toml
 ```
 
 Configuration reference: [`config.example.toml`](config.example.toml).
