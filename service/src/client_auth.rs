@@ -268,13 +268,12 @@ pub fn verify_private_key_jwt(
             "assertion iss/sub != client_id",
         ));
     }
-    let aud = claims
-        .get("aud")
-        .and_then(Value::as_str)
-        .ok_or_else(|| Error::new(code::INVALID_INPUT, "assertion has no aud"))?;
-    if aud != siros_issuer_core::oid4vci::issuer_identifier(expected_aud) {
-        return Err(Error::new(code::INVALID_INPUT, "assertion aud mismatch"));
-    }
+    // `aud` in either RFC 7519 encoding (issue #10).
+    crate::auth::require_aud(
+        &claims,
+        &siros_issuer_core::oid4vci::issuer_identifier(expected_aud),
+        "assertion",
+    )?;
     let exp = claims
         .get("exp")
         .and_then(Value::as_i64)
