@@ -45,8 +45,10 @@ jobs:
       image-name: sirosfoundation/siros-issuer-core
       dockerfile: ./Dockerfile
       custom-ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
-    outputs:
-      digest: ${{ jobs.docker.outputs.digest }}
+    # No outputs redeclaration here — that is not caller syntax and the
+    # file fails to parse (a job that `uses:` accepts no `outputs:`).
+    # The called workflow's outputs are already reachable downstream as
+    # needs.docker.outputs.digest.
 
   digest:
     name: Attach the image digest to the release
