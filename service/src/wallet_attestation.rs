@@ -262,10 +262,13 @@ impl WalletAttestationEvaluator {
             .get("alg")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        if !matches!(alg, "ES256") {
+        if alg != siros_issuer_core::signer::JWS_ALG {
             return Err(Error::new(
                 code::INVALID_INPUT,
-                format!("attestation alg {alg:?} is not ES256"),
+                format!(
+                    "attestation alg {alg:?} is not {}",
+                    siros_issuer_core::signer::JWS_ALG
+                ),
             ));
         }
 
@@ -707,7 +710,7 @@ fn leaf_to_jwk(key: &p256::ecdsa::VerifyingKey) -> Result<jose_rs::jwk::Jwk> {
         "crv": "P-256",
         "x": siros_issuer_core::sdjwt_issue::b64u(x),
         "y": siros_issuer_core::sdjwt_issue::b64u(y),
-        "alg": "ES256",
+        "alg": siros_issuer_core::signer::JWS_ALG,
         "use": "sig",
     }))
     .map_err(|e| Error::new(code::INVALID_INPUT, format!("leaf jwk: {e}")))
