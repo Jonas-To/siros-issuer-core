@@ -363,8 +363,8 @@ async fn spawn_service_dyn(
     .await
 }
 
-/// The full spawn: the client-auth posture is a parameter (issue #6's
-/// optional deployment).
+/// The client-auth posture is a parameter (issue #6's optional
+/// deployment); wallet attestation off.
 #[allow(clippy::too_many_arguments)]
 async fn spawn_service_dyn_posture(
     pdp: Arc<dyn TrustPdp>,
@@ -376,6 +376,40 @@ async fn spawn_service_dyn_posture(
     binding: Option<siros_issuer_service::config::PreAuthBindingCfg>,
     pre_authorized_client_auth: siros_issuer_service::config::PreAuthorizedClientAuth,
     refresh_token: Option<siros_issuer_service::config::RefreshTokenCfg>,
+) -> SignerAgnosticService {
+    spawn_service_full(
+        pdp,
+        allocator,
+        signer,
+        _public,
+        cert_chain_der,
+        deferred,
+        binding,
+        pre_authorized_client_auth,
+        refresh_token,
+        None,
+        suite_client_registry(),
+    )
+    .await
+}
+
+/// The full spawn: posture and the wallet-attestation evaluator
+/// (`[authorization.attestation.wallet]`) are parameters.
+#[allow(clippy::too_many_arguments)]
+async fn spawn_service_full(
+    pdp: Arc<dyn TrustPdp>,
+    allocator: Arc<RecordingAllocator>,
+    signer: Arc<dyn siros_issuer_core::signer::Signer>,
+    _public: jose_rs::jwk::Jwk,
+    cert_chain_der: Vec<Vec<u8>>,
+    deferred: bool,
+    binding: Option<siros_issuer_service::config::PreAuthBindingCfg>,
+    pre_authorized_client_auth: siros_issuer_service::config::PreAuthorizedClientAuth,
+    refresh_token: Option<siros_issuer_service::config::RefreshTokenCfg>,
+    wallet_attestation: Option<
+        Arc<siros_issuer_service::wallet_attestation::WalletAttestationEvaluator>,
+    >,
+    clients: siros_issuer_service::client_auth::ClientRegistry,
 ) -> SignerAgnosticService {
     // Any port: issuer_base is what signed URLs carry; bind 0 and use it.
     let issuer_base = Url::parse("http://127.0.0.1:8080").unwrap();
@@ -404,7 +438,7 @@ async fn spawn_service_dyn_posture(
         dpop: Arc::new(siros_issuer_service::dpop::DpopValidator::new(60)),
         last_public_nonce: Arc::new(std::sync::Mutex::new(String::new())),
         login_url: Some(Url::parse("http://127.0.0.1:8080/dev-portal/login").unwrap()),
-        clients: Arc::new(suite_client_registry()),
+        clients: Arc::new(clients),
         pre_authorized_client_auth,
         refresh_token,
         response_encryption_required: config.issuer.response_encryption_required,
@@ -441,7 +475,7 @@ async fn spawn_service_dyn_posture(
         rate_counters: siros_issuer_service::rate_limit::WalletRateCounters::from_config(
             &config.rate_limit,
         ),
-        wallet_attestation: None,
+        wallet_attestation,
         pre_auth_binding: binding,
     };
     let app = siros_issuer_service::api::router(state);
@@ -3170,6 +3204,87 @@ async fn signed_metadata_content_negotiation_round_trips() {
     );
 }
 
+/// Fetch the signed metadata and return its decoded JOSE header.
+async fn signed_metadata_header(base: &str) -> Value {
+    let jws = jjs_text(
+        reqwest::Client::new()
+            .get(format!("{base}/.well-known/openid-credential-issuer"))
+            .header("Accept", "application/jwt")
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    let header_b64 = jws.split('.').next().unwrap();
+    serde_json::from_slice(&siros_issuer_core::sdjwt_issue::b64u_decode(header_b64).unwrap())
+        .unwrap()
+}
+
+/// Signed metadata carries the configured issuer certificate chain as
+/// `x5c` (RFC 7515 §4.1.6: standard base64 DER, leaf first), so a
+/// trust-list wallet can anchor the metadata signer (TS 119 602 lists
+/// certificates). Oracle: the leaf's SubjectPublicKeyInfo is the very
+/// key in the header `jwk`, i.e. the key the JWS verifies under.
+#[tokio::test]
+async fn signed_metadata_carries_the_configured_x5c_chain() {
+    let allocator = Arc::new(RecordingAllocator {
+        list_url: Url::parse("http://127.0.0.1:9/lists/x").unwrap(),
+        next_index: AtomicU64::new(41),
+        updates: Mutex::new(Vec::new()),
+    });
+    let service = spawn_service(Arc::new(PermitPdp), allocator, test_signer()).await;
+    let header = signed_metadata_header(&service.base).await;
+
+    let x5c = header["x5c"].as_array().expect("x5c present");
+    assert!(!x5c.is_empty(), "x5c carries the chain");
+    let leaf_der = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        x5c[0].as_str().expect("x5c entries are strings"),
+    )
+    .expect("x5c is standard base64");
+    use x509_cert::der::Decode;
+    let leaf = x509_cert::Certificate::from_der(&leaf_der).expect("x5c[0] is a DER certificate");
+    let point = leaf
+        .tbs_certificate
+        .subject_public_key_info
+        .subject_public_key
+        .raw_bytes()
+        .to_vec();
+    let b64u = |v: &Value| {
+        siros_issuer_core::sdjwt_issue::b64u_decode(v.as_str().expect("coordinate")).unwrap()
+    };
+    let mut expected = vec![0x04];
+    expected.extend(b64u(&header["jwk"]["x"]));
+    expected.extend(b64u(&header["jwk"]["y"]));
+    assert_eq!(point, expected, "the x5c leaf key is the signing key");
+}
+
+/// Without a configured chain there is nothing to carry: no `x5c`, the
+/// header `jwk` alone (never an invented or empty chain).
+#[tokio::test]
+async fn signed_metadata_without_a_chain_has_no_x5c() {
+    let allocator = Arc::new(RecordingAllocator {
+        list_url: Url::parse("http://127.0.0.1:9/lists/x").unwrap(),
+        next_index: AtomicU64::new(41),
+        updates: Mutex::new(Vec::new()),
+    });
+    let (signer, _private) = test_signer();
+    let public = siros_issuer_core::signer::Signer::public_jwk(&signer).expect("public jwk");
+    let svc = spawn_service_dyn(
+        Arc::new(PermitPdp),
+        allocator,
+        Arc::new(signer),
+        public,
+        vec![],
+        false,
+        None,
+    )
+    .await;
+    let header = signed_metadata_header(&svc.base).await;
+    assert!(header.get("x5c").is_none(), "no chain, no x5c: {header}");
+    assert!(header["jwk"]["x"].is_string(), "the jwk still rides");
+}
+
 /// Read a text body (named to avoid the `json` shadow above).
 async fn jjs_text(response: reqwest::Response) -> String {
     response.text().await.expect("jws text")
@@ -5426,5 +5541,139 @@ async fn wrong_alg_still_refuses_and_parse_failures_answer_400() {
         status,
         reqwest::StatusCode::BAD_REQUEST,
         "a parse failure is a 400 (issue #24's 500): {body}"
+    );
+}
+
+// ─── AS metadata: the token endpoint's client-auth methods ───────────────
+
+async fn spawn_service_client_auth(
+    posture: siros_issuer_service::config::PreAuthorizedClientAuth,
+    wallet_attestation: bool,
+    registered_clients: bool,
+) -> SignerAgnosticService {
+    let (signer, private) = test_signer();
+    let public = siros_issuer_core::signer::Signer::public_jwk(&signer).expect("public jwk");
+    let cert_chain = signer_cert_chain(&private);
+    let pdp: Arc<dyn TrustPdp> = Arc::new(PermitPdp);
+    let evaluator = wallet_attestation.then(|| {
+        Arc::new(
+            siros_issuer_service::wallet_attestation::WalletAttestationEvaluator::new(
+                pdp.clone(),
+                Arc::new(siros_issuer_service::client_auth::WildcardRulesPolicy::new(
+                    Vec::new(),
+                )),
+                siros_issuer_service::wallet_attestation::WiaMode::Either,
+                Url::parse("http://127.0.0.1:8080").unwrap(),
+            ),
+        )
+    });
+    spawn_service_full(
+        pdp,
+        Arc::new(RecordingAllocator {
+            list_url: Url::parse("http://127.0.0.1:9/lists/test-list").unwrap(),
+            next_index: AtomicU64::new(7),
+            updates: Mutex::new(Vec::new()),
+        }),
+        Arc::new(signer),
+        public,
+        cert_chain,
+        false,
+        None,
+        posture,
+        None,
+        evaluator,
+        if registered_clients {
+            suite_client_registry()
+        } else {
+            Default::default()
+        },
+    )
+    .await
+}
+
+async fn as_metadata(base: &str) -> Value {
+    reqwest::get(format!("{base}/.well-known/oauth-authorization-server"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap()
+}
+
+/// RFC 8414 `token_endpoint_auth_methods_supported` lists what /token
+/// accepts in this configuration — private_key_jwt only with a
+/// registered client (`[authorization.clients.*]`), the attestation
+/// method only with `[authorization.attestation.wallet]`,
+/// `none` only under the pre-authorized `optional` posture. Advertising
+/// attest_jwt_client_auth carries both alg arrays (draft-ietf-oauth-
+/// attestation-based-client-auth-07 §10.1: MUST, JSON arrays per §13.3;
+/// the WE BUILD ITB+ wallet refuses AS metadata without them).
+#[tokio::test]
+async fn as_metadata_advertises_the_accepted_client_auth_methods() {
+    use siros_issuer_service::config::PreAuthorizedClientAuth::{Optional, Required};
+
+    // Default: private_key_jwt only; no attestation members, no `none`
+    // (required_posture_refuses_unauthenticated_with_invalid_client).
+    let svc = spawn_service_client_auth(Required, false, true).await;
+    let md = as_metadata(&svc.base).await;
+    assert_eq!(
+        md["token_endpoint_auth_methods_supported"],
+        json!(["private_key_jwt"]),
+        "{md}"
+    );
+    assert!(
+        md.get("client_attestation_signing_alg_values_supported")
+            .is_none(),
+        "{md}"
+    );
+    assert!(
+        md.get("client_attestation_pop_signing_alg_values_supported")
+            .is_none(),
+        "{md}"
+    );
+
+    // Wallet attestation configured: the method and both ES256 arrays.
+    let svc = spawn_service_client_auth(Required, true, true).await;
+    let md = as_metadata(&svc.base).await;
+    assert_eq!(
+        md["token_endpoint_auth_methods_supported"],
+        json!(["private_key_jwt", "attest_jwt_client_auth"]),
+        "{md}"
+    );
+    assert_eq!(
+        md["client_attestation_signing_alg_values_supported"],
+        json!(["ES256"]),
+        "{md}"
+    );
+    assert_eq!(
+        md["client_attestation_pop_signing_alg_values_supported"],
+        json!(["ES256"]),
+        "{md}"
+    );
+
+    // The optional posture accepts no client auth: `none` is advertised.
+    let svc = spawn_service_client_auth(Optional, false, true).await;
+    let md = as_metadata(&svc.base).await;
+    assert_eq!(
+        md["token_endpoint_auth_methods_supported"],
+        json!(["private_key_jwt", "none"]),
+        "{md}"
+    );
+
+    // No registered client: no assertion can verify, so private_key_jwt
+    // is not advertised — only what this configuration accepts.
+    let svc = spawn_service_client_auth(Required, true, false).await;
+    let md = as_metadata(&svc.base).await;
+    assert_eq!(
+        md["token_endpoint_auth_methods_supported"],
+        json!(["attest_jwt_client_auth"]),
+        "{md}"
+    );
+    let svc = spawn_service_client_auth(Required, false, false).await;
+    let md = as_metadata(&svc.base).await;
+    assert_eq!(
+        md["token_endpoint_auth_methods_supported"],
+        json!([]),
+        "{md}"
     );
 }

@@ -89,10 +89,14 @@ pub fn verify_bearer_assertion(
             .map_err(|_| Error::new(code::INVALID_INPUT, "assertion header is not base64url"))?,
     )
     .map_err(|e| Error::new(code::INVALID_INPUT, format!("assertion header: {e}")))?;
-    if header.alg != "ES256" {
+    if header.alg != siros_issuer_core::signer::JWS_ALG {
         return Err(Error::new(
             code::INVALID_INPUT,
-            format!("assertion alg {} is not ES256", header.alg),
+            format!(
+                "assertion alg {} is not {}",
+                header.alg,
+                siros_issuer_core::signer::JWS_ALG
+            ),
         ));
     }
     let jwk_value = header
@@ -196,10 +200,14 @@ pub fn verify_jwt_proof(
             .map_err(|_| Error::new(code::INVALID_INPUT, "proof header is not base64url"))?,
     )
     .map_err(|e| Error::new(code::INVALID_INPUT, format!("proof header: {e}")))?;
-    if header.alg != "ES256" {
+    if header.alg != siros_issuer_core::signer::JWS_ALG {
         return Err(Error::new(
             code::INVALID_INPUT,
-            format!("proof alg {} is not ES256", header.alg),
+            format!(
+                "proof alg {} is not {}",
+                header.alg,
+                siros_issuer_core::signer::JWS_ALG
+            ),
         ));
     }
     let jwk_value = header
@@ -286,10 +294,13 @@ pub fn verify_attestation_proof_all(
     // ES256 is the one method the mso_mdoc configurations advertise in
     // proof_types_supported; the alg is pinned before any verification
     // runs so the token's own choice is never trusted.
-    if alg != "ES256" {
+    if alg != siros_issuer_core::signer::JWS_ALG {
         return Err(Error::new(
             code::INVALID_PROOF,
-            format!("attestation alg {alg:?} is not ES256 (as advertised)"),
+            format!(
+                "attestation alg {alg:?} is not {} (as advertised)",
+                siros_issuer_core::signer::JWS_ALG
+            ),
         ));
     }
     if header.get("typ").and_then(Value::as_str) != Some("key-attestation+jwt") {
