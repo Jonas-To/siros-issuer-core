@@ -115,7 +115,8 @@ impl WalletAttestationEvaluator {
         scope: &str,
     ) -> Result<WalletAttestationResult> {
         // 1. Identity (vc parseAttestationIdentity): iss / x5c, fail-closed
-        //    on malformed x5c and on iss↔x5c disagreement.
+        //    on malformed x5c (an x5c WIA's identity is its leaf; `iss`
+        //    is not compared with it).
         let identity = parse_attestation_identity(attestation)?;
 
         // 2. Mode enforcement BEFORE any signature verification (vc
@@ -482,20 +483,16 @@ fn parse_attestation_identity(attestation: &str) -> Result<AttestationIdentity> 
         // Identity from the leaf (vc issuerFromX5CLeaf: SAN DNS > SAN URI > CN).
         let leaf_der = b64_decode_std(&identity.x5c[0])
             .map_err(|_| Error::new(code::INVALID_INPUT, "x5c leaf not base64"))?;
-        let cert_identity = issuer_from_x5c_leaf(&leaf_der)?;
-        // iss consistency when present (vc issMatchesCertIdentity: the
-        // URL-vs-hostname shape difference is accounted for).
-        if let Some(iss) = &identity.iss {
-            if !iss_matches_cert_identity(iss, &cert_identity) {
-                return Err(Error::new(
-                    code::INVALID_INPUT,
-                    format!(
-                        "iss claim {iss:?} does not match x5c certificate identity {cert_identity:?}"
-                    ),
-                ));
-            }
-        }
-        identity.cert_identity = Some(cert_identity);
+        // An x5c WIA's identity is the leaf alone; `iss` is not compared
+        // with it (a deliberate deviation from vc's issMatchesCertIdentity).
+        // draft-ietf-oauth-attestation-based-client-auth dropped `iss` from
+        // the Client Attestation JWT in -08 and trusts x5c by its chain
+        // (-12 §10.8); OpenID4VCI 1.0 Appendix E and HAIP 1.0 §4.4.1 ask
+        // only for a trusted x5c signer. Wallets put unrelated values there
+        // (an instance UUID, where the leaf is the provider's host). The
+        // PDP judges the certificate, so an `iss` naming a trusted provider
+        // never helps an untrusted chain.
+        identity.cert_identity = Some(issuer_from_x5c_leaf(&leaf_der)?);
     }
 
     if identity.iss.is_none() && !identity.has_x5c {
@@ -594,22 +591,6 @@ fn directory_string(any: &x509_cert::der::asn1::Any) -> Option<String> {
         return Some(value.to_string());
     }
     None
-}
-
-/// iss↔cert consistency (vc `issMatchesCertIdentity`): exact, or the
-/// iss URL's host matches the cert's DNS SAN.
-fn iss_matches_cert_identity(iss: &str, cert_identity: &str) -> bool {
-    if iss == cert_identity {
-        return true;
-    }
-    if let Ok(url) = url::Url::parse(iss) {
-        if let Some(host) = url.host_str() {
-            if host == cert_identity {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 /// PoP validation (draft §5.2, vc `validateAttestationPoP`): typ, signature
