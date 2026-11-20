@@ -794,7 +794,19 @@ unseparated; in-line `hkdf`/`random` shapes remain for fixtures. **DONE (v2):
 profile's metadata stays byte-identical) derives the per-configuration plan from
 each rulebook's `[zk.rulebooks.<name>.auxiliary_data]` (mechanism only: type/alg/
 path/required/encoding; to_wallet never `required`, to_issuer always; fail-closed
-validation). Remaining v2-line item: `to_issuer` entries (wallet commitments from
+validation). **DONE (v2): response display members** — `issuance.emit_credential_
+metadata_on_response` (default false; issue #41, OpenID4VCI 1.0 ID1 §12.2.4): the
+response-level `credential_metadata` gains `display` (the localized display objects)
+and `claims` (the §12.2.4 Appendix B.2 claim descriptions), mapped from the
+credential's TS11 catalog document body by vc's `Generate` mapping (the
+ported-semantics reference, Appendix A) — mdoc's namespaced claims and sd-jwt's B.2
+lists both leave as descriptions in sorted path order, the label rule works both
+ways, and the first SVG template doubles as the `logo` when the document carries
+none (vc's `mapSvgTemplates`). The knob ADDS members around the auxiliary-data
+carrier, it never gates it; the default-off posture keeps the OIDF suite's closed
+response set clean (the conformance fixture leaves it unset — the suite is that
+posture's oracle), and wallet-serving deployments opt in (the realeyes fixture
+does). Remaining v2-line item: `to_issuer` entries (wallet commitments from
 proofs). The storage layer is
 pluggable behind the async `SessionStore` trait (§4.3), `MemoryStore` the reference
 implementation.

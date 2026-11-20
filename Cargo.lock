@@ -3358,7 +3358,7 @@ dependencies = [
 
 [[package]]
 name = "siros-issuer-core"
-version = "0.2.5"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -3379,7 +3379,7 @@ dependencies = [
 
 [[package]]
 name = "siros-issuer-service"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "async-stream",
