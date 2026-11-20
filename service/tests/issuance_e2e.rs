@@ -469,6 +469,7 @@ async fn spawn_service_full(
         zk_seeds: Default::default(),
         request_encryption_key: None,
         cert_chain_der: cert_chain_der.clone(),
+        metadata_signer: None,
         attestation: Arc::new(siros_issuer_service::client_auth::WildcardRulesPolicy::new(
             Vec::new(),
         )),
