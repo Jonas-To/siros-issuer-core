@@ -1162,8 +1162,16 @@ no-burn; disabled/unknown grants answer `unsupported_grant_type`; expiry.
    the tier policy. PoP per draft §5.2 (typ oauth-client-attestation-pop+jwt,
    cnf.jwk signature, aud, exp/iat), legacy empty-pop accepted. Token
    endpoint: `OAuth-Client-Attestation`(+`-PoP`) headers or RFC 7523.
-   7 tests: both modes end-to-end, mode pinning, untrusted refusal,
-   malformed-x5c fail-closed, iss↔cert disagreement, PoP positive/negative
+   **Deviation from vc (2026-11-20):** an x5c WIA's identity is the leaf's
+   SAN/CN alone and `iss` is not compared with it (vc's
+   `issMatchesCertIdentity` refused Credenco's WIA, whose `iss` is an
+   instance UUID). draft-ietf-oauth-attestation-based-client-auth dropped
+   `iss` in -08 and trusts x5c by its chain (-12 §10.8); OpenID4VCI 1.0
+   Appendix E and HAIP 1.0 §4.4.1 require only a trusted x5c signer. The
+   PDP judges the certificate, so `iss` never helps an untrusted chain.
+   Tests: both modes end-to-end, mode pinning, untrusted refusal,
+   malformed-x5c fail-closed, an unrelated iss ignored, an iss naming a
+   trusted provider on an untrusted chain refused, PoP positive/negative
    + legacy. Config absent ⇒ private_key_jwt only (the conformance profile,
    unchanged).
 

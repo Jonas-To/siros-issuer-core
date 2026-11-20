@@ -359,13 +359,15 @@ async fn malformed_x5c_never_masquerades_as_ietf() {
 }
 
 #[tokio::test]
-async fn iss_cert_disagreement_is_refused() {
+async fn x5c_identity_ignores_an_unrelated_iss() {
     let issuer = attestation_issuer();
-    // x5c says wallet-provider.example.org; iss claims someone else:
-    // re-sign the same issuer key with a hostile iss.
+    // x5c says wallet-provider.example.org; iss is something else (a
+    // wallet instance UUID, as Credenco sends). The leaf is the identity
+    // and iss is ignored (draft-ietf-oauth-attestation-based-client-auth
+    // -12 §10.8): accepted, and the identity the PDP judged is the leaf's.
     let claims = json!({
         "sub": "wallet-instance-4",
-        "iss": "https://evil.example.org",
+        "iss": "748efd5c-0000-4000-8000-000000000000",
         "attestation_source": "backend_attested",
         "iat": NOW,
         "exp": NOW + 3600,
@@ -376,11 +378,31 @@ async fn iss_cert_disagreement_is_refused() {
     });
     let wia = sign_compact(&issuer.key, &header, &claims);
     let evaluator = make_evaluator(WiaMode::Either, Vec::new());
-    let err = evaluator.evaluate(&wia, "pid").await.unwrap_err();
-    assert!(
-        err.message.contains("does not match"),
-        "the iss↔cert disagreement refuses: {err}"
-    );
+    let result = evaluator.evaluate(&wia, "pid").await.unwrap();
+    assert_eq!(result.issuer, "wallet-provider.example.org");
+}
+
+#[tokio::test]
+async fn iss_naming_a_trusted_provider_does_not_help_an_untrusted_chain() {
+    // A chain the PDP does not trust, with iss naming the trusted
+    // provider: the leaf's identity is judged, and refused.
+    let untrusted = shaped_attestation_issuer(|params| {
+        *params = rcgen::CertificateParams::new(vec!["untrusted.example.net".to_string()]).unwrap();
+    });
+    let claims = json!({
+        "sub": "wallet-instance-5",
+        "iss": "https://wallet-provider.example.org",
+        "attestation_source": "backend_attested",
+        "iat": NOW,
+        "exp": NOW + 3600,
+    });
+    let header = json!({
+        "alg": "ES256",
+        "x5c": [b64_decode_std_to_string(&untrusted.cert_der)],
+    });
+    let wia = sign_compact(&untrusted.key, &header, &claims);
+    let evaluator = make_evaluator(WiaMode::Either, Vec::new());
+    assert!(evaluator.evaluate(&wia, "pid").await.is_err());
 }
 
 #[tokio::test]
