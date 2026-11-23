@@ -806,7 +806,14 @@ none (vc's `mapSvgTemplates`). The knob ADDS members around the auxiliary-data
 carrier, it never gates it; the default-off posture keeps the OIDF suite's closed
 response set clean (the conformance fixture leaves it unset — the suite is that
 posture's oracle), and wallet-serving deployments opt in (the realeyes fixture
-does). Remaining v2-line item: `to_issuer` entries (wallet commitments from
+does). **DONE (v2): catalog-typed commitment claims** — a derived commitment's
+credential-claim encoding follows the catalog's declared `value_type` (issue #43):
+`bstr` carries the raw bytes (the 32-byte sha-256 commitment as a CBOR byte string —
+the presenter binds `SHA256(seed) == ssc` over the bytes), `tstr` the
+configured-encoding text, and anything else — including an undeclared type — is a
+`catalog_invalid` refusal at issuance, never a guessed encoding (the leniency that
+delivered a text ssc past the encoding-aware issuance gate and refused at
+presentation, after consent). Remaining v2-line item: `to_issuer` entries (wallet commitments from
 proofs). The storage layer is
 pluggable behind the async `SessionStore` trait (§4.3), `MemoryStore` the reference
 implementation.
