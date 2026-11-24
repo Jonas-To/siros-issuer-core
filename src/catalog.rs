@@ -15,6 +15,54 @@ pub fn build_catalog(documents: Vec<RegistryDocument>) -> Result<Catalog> {
     Catalog::from_documents(documents).map_err(Error::from)
 }
 
+/// The dc+sd-jwt credential claims of a subject: every catalog claim the
+/// subject has, at its own path — `["registered_address", "post_code"]`
+/// is a member of `registered_address`, never a top-level `post_code`.
+/// Nothing the catalog does not name becomes a claim.
+pub fn credential_claims(
+    credential: &CredentialType,
+    subject: &serde_json::Value,
+) -> serde_json::Map<String, serde_json::Value> {
+    use serde_json::{Map, Value};
+
+    let mut claims = Map::new();
+    'claims: for claim in &credential.claims {
+        let mut value = subject;
+        let mut names = Vec::new();
+        for segment in &claim.path {
+            // Absent optional claims are skipped (mandatories were gated at
+            // session creation), and so is a path into an array: the
+            // array's own claim carries its elements.
+            let Some(name) = segment.as_deref() else {
+                continue 'claims;
+            };
+            let Some(next) = value.get(name) else {
+                continue 'claims;
+            };
+            names.push(name);
+            value = next;
+        }
+        let Some((last, parents)) = names.split_last() else {
+            continue;
+        };
+        // The claims mirror the subject's own structure, so every parent
+        // is an object, whichever of parent and child is listed first.
+        let mut target = &mut claims;
+        for parent in parents {
+            let Some(object) = target
+                .entry(*parent)
+                .or_insert_with(|| Value::Object(Map::new()))
+                .as_object_mut()
+            else {
+                continue 'claims;
+            };
+            target = object;
+        }
+        target.insert((*last).to_owned(), value.clone());
+    }
+    claims
+}
+
 /// Resolve a credential by any of its identifiers: vct (dc+sd-jwt), doctype
 /// (mso_mdoc), or TS11 schema id. Unambiguous identifiers only — a vct,
 /// doctype or schema id that matches more than one distinct credential is a
