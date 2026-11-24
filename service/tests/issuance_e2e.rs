@@ -419,9 +419,44 @@ async fn spawn_service_full(
     >,
     clients: siros_issuer_service::client_auth::ClientRegistry,
 ) -> SignerAgnosticService {
+    spawn_service_with_config(
+        fixture_config(),
+        pdp,
+        allocator,
+        signer,
+        _public,
+        cert_chain_der,
+        deferred,
+        binding,
+        pre_authorized_client_auth,
+        refresh_token,
+        wallet_attestation,
+        clients,
+    )
+    .await
+}
+
+/// [`spawn_service_full`] over a configuration of the test's own (another
+/// catalog directory).
+#[allow(clippy::too_many_arguments)]
+async fn spawn_service_with_config(
+    config: Config,
+    pdp: Arc<dyn TrustPdp>,
+    allocator: Arc<RecordingAllocator>,
+    signer: Arc<dyn siros_issuer_core::signer::Signer>,
+    _public: jose_rs::jwk::Jwk,
+    cert_chain_der: Vec<Vec<u8>>,
+    deferred: bool,
+    binding: Option<siros_issuer_service::config::PreAuthBindingCfg>,
+    pre_authorized_client_auth: siros_issuer_service::config::PreAuthorizedClientAuth,
+    refresh_token: Option<siros_issuer_service::config::RefreshTokenCfg>,
+    wallet_attestation: Option<
+        Arc<siros_issuer_service::wallet_attestation::WalletAttestationEvaluator>,
+    >,
+    clients: siros_issuer_service::client_auth::ClientRegistry,
+) -> SignerAgnosticService {
     // Any port: issuer_base is what signed URLs carry; bind 0 and use it.
     let issuer_base = Url::parse("http://127.0.0.1:8080").unwrap();
-    let config = fixture_config();
     let source = fetch::CatalogSource::from_config(&config.catalog).unwrap();
     let catalog =
         futures_util::FutureExt::now_or_never(async { fetch::load_catalog(&source).await })
@@ -5514,6 +5549,118 @@ async fn a_to_wallet_opening_refuses_a_plain_response() {
         body.to_string().contains("must be encrypted"),
         "the refusal names the rule: {body}"
     );
+}
+
+/// SD-JWT VC type metadata `sd: "never"`: the claim rides the signed
+/// payload in the clear and has no disclosure; the claims without it are
+/// disclosures and only digests in the payload, nested members at their
+/// own path included. verifier-core verifies the mixed credential and
+/// resolves every claim where the subject has it.
+#[tokio::test]
+async fn a_never_disclosable_claim_is_issued_in_the_clear() {
+    let testdata = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/ts11");
+    let catalog = tempfile::tempdir().unwrap();
+    std::fs::copy(
+        testdata.join("schema-page.json"),
+        catalog.path().join("schema-page.json"),
+    )
+    .unwrap();
+    let mut documents: Value =
+        serde_json::from_slice(&std::fs::read(testdata.join("documents.json")).unwrap()).unwrap();
+    let pid = documents
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|document| document["body"]["vct"] == "urn:eudi:pid:1")
+        .unwrap();
+    for claim in pid["body"]["claims"].as_array_mut().unwrap() {
+        if claim["path"] == json!(["given_name"]) {
+            claim["sd"] = json!("never");
+        }
+    }
+    pid["body"]["claims"].as_array_mut().unwrap().extend([
+        json!({"path": ["address"], "sd": "never"}),
+        json!({"path": ["address", "country"], "sd": "never"}),
+        json!({"path": ["address", "post_code"]}),
+    ]);
+    std::fs::write(
+        catalog.path().join("documents.json"),
+        serde_json::to_vec(&documents).unwrap(),
+    )
+    .unwrap();
+    let mut config = fixture_config();
+    config.catalog.static_dir = Some(catalog.path().to_owned());
+
+    let (signer, private) = test_signer();
+    let public = siros_issuer_core::signer::Signer::public_jwk(&signer).unwrap();
+    let service = spawn_service_with_config(
+        config,
+        Arc::new(PermitPdp),
+        Arc::new(RecordingAllocator {
+            list_url: Url::parse("http://127.0.0.1:9/lists/test-list").unwrap(),
+            next_index: AtomicU64::new(0),
+            updates: Mutex::new(Vec::new()),
+        }),
+        Arc::new(signer),
+        public.clone(),
+        signer_cert_chain(&private),
+        false,
+        None,
+        siros_issuer_service::config::PreAuthorizedClientAuth::Required,
+        None,
+        None,
+        suite_client_registry(),
+    )
+    .await;
+    let service = TestService {
+        base: service.base,
+        signer: siros_issuer_core::signer::JwkSigner::new(private).unwrap(),
+    };
+    let (created, _) = create_session(
+        &service,
+        &ec_key(),
+        json!({
+            "credential": "urn:eudi:pid:1",
+            "subject": {
+                "given_name": "Anna", "family_name": "Andersson",
+                "address": {"country": "SE", "post_code": "11122"}
+            }
+        }),
+    )
+    .await;
+    let body: Value = created.json().await.unwrap();
+    let (issued, _) = wallet_redeem(&service, body["offer_uri"].as_str().unwrap()).await;
+
+    let decode = |part: &str| -> Value {
+        serde_json::from_slice(&siros_issuer_core::sdjwt_issue::b64u_decode(part).unwrap()).unwrap()
+    };
+    let mut parts = issued.split('~');
+    let payload = decode(parts.next().unwrap().split('.').nth(1).unwrap());
+    assert_eq!(payload["given_name"], "Anna");
+    assert!(payload.get("family_name").is_none());
+    assert_eq!(payload["address"]["country"], "SE");
+    assert!(payload["address"].get("post_code").is_none());
+    assert!(payload.get("country").is_none());
+    let mut disclosed: Vec<String> = parts
+        .filter(|part| !part.is_empty())
+        .map(|part| decode(part)[1].as_str().unwrap().to_owned())
+        .collect();
+    disclosed.sort();
+    assert_eq!(disclosed, vec!["family_name", "post_code"]);
+
+    let verified = verify_sdjwt(
+        &issued,
+        &StaticKey(public),
+        &VerifyParams::new(now_unix(), HolderBinding::NotRequired),
+    )
+    .expect("verifier-core verifies the mixed credential");
+    assert_eq!(verified.claims["given_name"], "Anna");
+    assert_eq!(verified.claims["family_name"], "Andersson");
+    assert_eq!(
+        verified.claims["address"],
+        json!({"country": "SE", "post_code": "11122"})
+    );
+    assert!(verified.claims.get("post_code").is_none());
 }
 
 /// `[issuer] display_name` is optional and defaults to unset.

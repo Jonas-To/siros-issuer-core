@@ -1795,8 +1795,8 @@ fn catalog_format(state: &AppState, configuration_id: &str) -> Option<String> {
 /// session's subject data (namespace = doctype, elements from the
 /// subject's claims), sign the MSO with the issuer key (COSE_Sign1 via
 /// One dc+sd-jwt issuance (Final §8.3 `credentials[]` entry): catalog-
-/// driven claims, RFC 9901 §10.1 rounded iat/exp (linkability), every
-/// subject claim concealed, the status reference recorded and the
+/// driven claims, RFC 9901 §10.1 rounded iat/exp (linkability), subject
+/// claims concealed unless `sd: "never"`, the status reference recorded and the
 /// Issued transition applied. Shared by the single (`/credential`) and
 /// batch (`/batch-credential`) endpoints — one call per entry.
 #[allow(clippy::too_many_arguments, clippy::result_large_err)]
@@ -1813,9 +1813,9 @@ async fn issue_sdjwt_entry(
 
     // The catalog credential is the authority on which subject claims
     // become credential claims (design §5: catalog-driven, fail-closed):
-    // dc+sd-jwt paths are [claim]; anything else in the subject (e.g. a
-    // nested mdoc namespace block from a merged integrator payload)
-    // never leaks into the credential.
+    // each claim issues at its own path; anything else in the subject
+    // (e.g. a nested mdoc namespace block from a merged integrator
+    // payload) never leaks into the credential.
     let catalog = state.catalog_snapshot();
     let credential =
         siros_issuer_core::catalog::resolve(&catalog, &record.credential_configuration_id)
@@ -1848,27 +1848,19 @@ async fn issue_sdjwt_entry(
             },
         },
     });
-    let claims_object = claims.as_object_mut().expect("claims literal is an object");
-    for claim in &credential.claims {
-        // Absent optional claims are skipped; mandatories were gated at
-        // session creation.
-        let Some(value) = resolve_claim_path(subject, &claim.path) else {
-            continue;
-        };
-        let Some(name) = claim.path.last().and_then(|seg| seg.as_deref()) else {
-            continue;
-        };
-        claims_object.insert(name.to_owned(), value.clone());
-    }
-
-    // Conceal every subject claim: selective disclosure for all of them.
-    let conceal = claims
-        .as_object()
-        .expect("claims are an object")
-        .keys()
-        .filter(|key| !matches!(key.as_str(), "iss" | "iat" | "exp" | "vct" | "status"))
-        .map(|key| vec![Seg::Key(key.clone())])
-        .collect::<Vec<_>>();
+    // Subject claims are concealed, except those the type metadata declares
+    // `sd: "never"` (a rulebook that forbids selective disclosure).
+    let subject_claims = siros_issuer_core::catalog::credential_claims(credential, subject);
+    let conceal = siros_issuer_core::catalog::concealed_claims(credential, &subject_claims)
+        .map_err(|e| credential_err(state, &e))?
+        .into_iter()
+        .filter(|path| !matches!(path[0].as_str(), "iss" | "iat" | "exp" | "vct" | "status"))
+        .map(|path| path.into_iter().map(Seg::Key).collect())
+        .collect::<Vec<Vec<Seg>>>();
+    claims
+        .as_object_mut()
+        .expect("claims literal is an object")
+        .extend(subject_claims);
 
     let spec = IssueSpec {
         claims,
