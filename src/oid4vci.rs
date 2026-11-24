@@ -57,6 +57,10 @@ pub struct CredentialIssuerMetadata {
     /// per proof key), distinct and unpredictable status indices.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub batch_credential_issuance: Option<BatchCredentialIssuance>,
+    /// Final §12.2.4: the issuer's own display names — what a wallet
+    /// shows instead of the identifier URL. Omitted unless configured.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub display: Vec<Display>,
 }
 
 /// The `batch_credential_issuance` metadata object (Final §12.2.2).
@@ -255,6 +259,9 @@ pub struct EndpointPaths {
     /// Request-encryption key (JWK JSON), published in
     /// credential_request_encryption.jwks.
     pub request_encryption_jwk: Option<serde_json::Value>,
+    /// The issuer-level `display` name (Final §12.2.4). `None` = the
+    /// metadata carries no issuer `display`.
+    pub issuer_display_name: Option<String>,
 }
 
 impl Default for EndpointPaths {
@@ -266,6 +273,7 @@ impl Default for EndpointPaths {
             nonce: Some("nonce"),
             notification: Some("notification"),
             request_encryption_jwk: None,
+            issuer_display_name: None,
         }
     }
 }
@@ -393,6 +401,14 @@ pub fn metadata_from_catalog(
         batch_credential_issuance: paths
             .batch_credential
             .map(|(_, batch_size)| BatchCredentialIssuance { batch_size }),
+        display: paths
+            .issuer_display_name
+            .iter()
+            .map(|name| Display {
+                name: name.clone(),
+                locale: None,
+            })
+            .collect(),
     })
 }
 

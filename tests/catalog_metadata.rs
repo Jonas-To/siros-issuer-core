@@ -333,6 +333,36 @@ fn credential_request_encryption_carries_only_final_schema_members() {
     assert!(object["jwks"]["keys"][0].get("d").is_none());
 }
 
+/// 1.0 Final §12.2.4 issuer `display`: the configured name rides the
+/// document (and the signed metadata, which serializes the same struct);
+/// unconfigured, the member is absent. The identifier never changes.
+#[test]
+fn issuer_display_is_present_only_when_configured() {
+    let (_, documents) = fixtures();
+    let catalog = build_catalog(documents).unwrap();
+    let wire = |issuer_display_name: Option<String>| {
+        let metadata = metadata_from_catalog(
+            &issuer_base(),
+            &catalog,
+            vec![],
+            &EndpointPaths {
+                issuer_display_name,
+                ..Default::default()
+            },
+            &std::collections::BTreeMap::new(),
+            true,
+            &std::collections::BTreeMap::new(),
+        )
+        .unwrap();
+        serde_json::to_value(&metadata).unwrap()
+    };
+    let named = wire(Some("Example Issuer".to_owned()));
+    assert_eq!(named["display"], json!([{ "name": "Example Issuer" }]));
+    let unnamed = wire(None);
+    assert!(unnamed.get("display").is_none());
+    assert_eq!(named["credential_issuer"], unnamed["credential_issuer"]);
+}
+
 /// Gap 3: a configured ARF disclosure policy (the vc/ARF shape — CIR
 /// 2024/2979 Annex III / ETSI TS 119 472-3 §4.2.5, openid/OpenID4VCI#384:
 /// no stable normative layout yet) embeds on THAT credential's

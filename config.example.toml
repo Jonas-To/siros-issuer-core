@@ -6,6 +6,9 @@
 [issuer]
 # HTTPS in production; HTTP on loopback is accepted for development.
 url = "https://issuer.example.org"
+# Optional: the issuer-level metadata `display` name a wallet shows
+# instead of the URL (Final §12.2.4). Omitted: no issuer `display`.
+# display_name = "Example Issuer"
 # Optional: separate Authorization Server(s). Omitted means the issuer is
 # its own AS (v1 default).
 # authorization_servers = ["https://auth.example.org"]
