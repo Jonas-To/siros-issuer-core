@@ -75,11 +75,26 @@ fn catalog_drives_metadata_and_configuration_ids() {
     // OID4VCI 1.0 Final §12.2.4: the vct is a bare member of the
     // configuration — no draft-era credential_definition wrapper.
     assert_eq!(sdjwt.vct.as_deref(), Some("urn:eudi:pid:1"));
-    let claims = sdjwt.claims.as_ref().unwrap().as_array().unwrap();
-    assert_eq!(claims.len(), 3);
-    assert!(claims
-        .iter()
-        .any(|claim| claim["path"] == json!(["birth_date"]) && claim["mandatory"] == json!(false)));
+    let wire = serde_json::to_value(sdjwt).unwrap();
+    // Final §12.2.4: `display` and `claims` are members of
+    // credential_metadata, never of the configuration (the ID1 layout);
+    // the claim and credential names keep the document's locale, and
+    // `mandatory` defaults to false (Appendix B).
+    assert!(wire.get("claims").is_none());
+    assert!(wire.get("display").is_none());
+    assert_eq!(
+        wire["credential_metadata"],
+        json!({
+            "display": [{"name": "Person Identification Data (PID)", "locale": "en"}],
+            "claims": [
+                {"path": ["given_name"], "mandatory": true,
+                 "display": [{"name": "Given name", "locale": "en"}]},
+                {"path": ["family_name"], "mandatory": true,
+                 "display": [{"name": "Family name", "locale": "en"}]},
+                {"path": ["birth_date"], "display": [{"name": "birth_date"}]},
+            ],
+        })
+    );
     // Final §12.2.4: binding methods co-present with proof types, and
     // each proof type carries its required signing algs.
     assert_eq!(sdjwt.cryptographic_binding_methods_supported, vec!["jwk"]);
@@ -94,14 +109,14 @@ fn catalog_drives_metadata_and_configuration_ids() {
         .expect("mso_mdoc configuration keyed by doctype");
     assert_eq!(mdoc.format, MDOC_FORMAT);
     assert_eq!(mdoc.doctype.as_deref(), Some("eu.europa.ec.eudi.pid.1"));
-    // No claims member for mso_mdoc: the conformance suite's
-    // credential_issuer_metadata-1_0.json mso_mdoc branch defines only
-    // doctype and credential_signing_alg_values_supported
-    // (unevaluatedProperties:false — a claims member warns as an unknown
-    // extension), unlike the dc+sd-jwt branch which carries claims. The
-    // catalog's claims still drive issuance (schema gate, elements) —
-    // verified by the mdoc issuance e2e test.
-    assert!(mdoc.claims.is_none());
+    // Display only for mso_mdoc. The catalog's claims still drive issuance
+    // (schema gate, elements) — verified by the mdoc issuance e2e test.
+    let wire = serde_json::to_value(mdoc).unwrap();
+    assert!(wire.get("display").is_none());
+    assert_eq!(
+        wire["credential_metadata"],
+        json!({"display": [{"name": "PID (mdoc)", "locale": "en"}]})
+    );
 
     // Final §12.2.4: response encryption is an issuer-level member with
     // encryption_required (not per-configuration, the draft-era shape).
@@ -333,6 +348,36 @@ fn credential_request_encryption_carries_only_final_schema_members() {
     assert!(object["jwks"]["keys"][0].get("d").is_none());
 }
 
+/// 1.0 Final §12.2.4 issuer `display`: the configured name rides the
+/// document (and the signed metadata, which serializes the same struct);
+/// unconfigured, the member is absent. The identifier never changes.
+#[test]
+fn issuer_display_is_present_only_when_configured() {
+    let (_, documents) = fixtures();
+    let catalog = build_catalog(documents).unwrap();
+    let wire = |issuer_display_name: Option<String>| {
+        let metadata = metadata_from_catalog(
+            &issuer_base(),
+            &catalog,
+            vec![],
+            &EndpointPaths {
+                issuer_display_name,
+                ..Default::default()
+            },
+            &std::collections::BTreeMap::new(),
+            true,
+            &std::collections::BTreeMap::new(),
+        )
+        .unwrap();
+        serde_json::to_value(&metadata).unwrap()
+    };
+    let named = wire(Some("Example Issuer".to_owned()));
+    assert_eq!(named["display"], json!([{ "name": "Example Issuer" }]));
+    let unnamed = wire(None);
+    assert!(unnamed.get("display").is_none());
+    assert_eq!(named["credential_issuer"], unnamed["credential_issuer"]);
+}
+
 /// Gap 3: a configured ARF disclosure policy (the vc/ARF shape — CIR
 /// 2024/2979 Annex III / ETSI TS 119 472-3 §4.2.5, openid/OpenID4VCI#384:
 /// no stable normative layout yet) embeds on THAT credential's
@@ -396,5 +441,65 @@ fn a_configured_disclosure_policy_rides_its_own_configuration() {
             configuration.disclosure_policy.is_none(),
             "{id} absent by default: {configuration:?}"
         );
+    }
+}
+
+/// The OIDF suite's credential_issuer_metadata-1_0.json closes the
+/// credential_metadata objects (additionalProperties:false): SVG
+/// rendering, `svg_id` and the VCTM `label` spelling stay out of the
+/// metadata, and an SVG-only document still names its card.
+#[test]
+fn credential_metadata_carries_only_final_members() {
+    let (_, documents) = fixtures();
+    let catalog = build_catalog(documents).unwrap();
+    let metadata = metadata_from_catalog(
+        &issuer_base(),
+        &catalog,
+        vec![],
+        &EndpointPaths::default(),
+        &std::collections::BTreeMap::new(),
+        true,
+        &std::collections::BTreeMap::new(),
+    )
+    .unwrap();
+    let wire = serde_json::to_value(&metadata).unwrap();
+    for (id, configuration) in wire["credential_configurations_supported"]
+        .as_object()
+        .unwrap()
+    {
+        let metadata = &configuration["credential_metadata"];
+        for entry in metadata["display"].as_array().expect("display") {
+            for member in entry.as_object().unwrap().keys() {
+                assert!(
+                    [
+                        "name",
+                        "locale",
+                        "logo",
+                        "description",
+                        "background_color",
+                        "background_image",
+                        "text_color"
+                    ]
+                    .contains(&member.as_str()),
+                    "{id}: display member {member}"
+                );
+            }
+        }
+        for claim in metadata["claims"].as_array().into_iter().flatten() {
+            for member in claim.as_object().unwrap().keys() {
+                assert!(
+                    ["path", "mandatory", "display"].contains(&member.as_str()),
+                    "{id}: claim member {member}"
+                );
+            }
+            for entry in claim["display"].as_array().into_iter().flatten() {
+                for member in entry.as_object().unwrap().keys() {
+                    assert!(
+                        ["name", "locale"].contains(&member.as_str()),
+                        "{id}: claim display member {member}"
+                    );
+                }
+            }
+        }
     }
 }

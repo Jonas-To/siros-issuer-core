@@ -442,6 +442,11 @@ fn default_c_nonce_ttl() -> i64 {
 pub struct IssuerCfg {
     /// HTTPS, or HTTP on loopback for development.
     pub url: String,
+    /// What a wallet shows as the issuer: the issuer-level `display`
+    /// name of the metadata (OID4VCI 1.0 Final §12.2.4). Presentation
+    /// only — `url` stays the identifier. Omitted when unset.
+    #[serde(default)]
+    pub display_name: Option<String>,
     #[serde(default)]
     pub authorization_servers: Vec<String>,
     /// The response-encryption posture (issue #21): the issuer

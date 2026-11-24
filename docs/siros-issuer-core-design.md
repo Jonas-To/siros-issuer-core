@@ -1320,11 +1320,11 @@ own classes/schema, then module-verified):
   catalog + subject fixtures.
 - **RFC 8943 full-date typing**: `birth_date` is CBOR tag-1004 text
   (`MsoBuilder::add_full_date`; vc's `mdoc.FullDate` marshals the same).
-- **mso_mdoc metadata carries no `claims` member**: the suite's
-  `credential_issuer_metadata-1_0.json` mso_mdoc branch accepts only
-  `doctype` + `credential_signing_alg_values_supported`
-  (`unevaluatedProperties:false`); the catalog's claims drive issuance
-  (schema gate, elements), not the metadata.
+- **`display` and `claims` ride each configuration's `credential_metadata`**
+  (Final §12.2.4), never the configuration itself (the ID1 layout), with the
+  catalog document's locales and only the members Final defines. mso_mdoc
+  carries `display` only; the catalog's claims drive issuance (schema gate,
+  elements), not the metadata.
 **Upstream filed:** siros-verifier-core#13 (catalog index maps stale after
 sort), siros-status-service#20 (StatusListToken embedded-jwk `kid` —
 local-test status stub in the conformance profile stands in until the fix

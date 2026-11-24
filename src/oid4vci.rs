@@ -10,7 +10,7 @@
 
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
-use siros_verifier_core::ts11::{Catalog, ClaimMetadata, CredentialType};
+use siros_verifier_core::ts11::{Catalog, CredentialType};
 use std::collections::BTreeMap;
 use url::Url;
 
@@ -57,6 +57,10 @@ pub struct CredentialIssuerMetadata {
     /// per proof key), distinct and unpredictable status indices.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub batch_credential_issuance: Option<BatchCredentialIssuance>,
+    /// Final §12.2.4: the issuer's own display names — what a wallet
+    /// shows instead of the identifier URL. Omitted unless configured.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub display: Vec<Display>,
 }
 
 /// The `batch_credential_issuance` metadata object (Final §12.2.2).
@@ -145,15 +149,13 @@ pub struct CredentialConfiguration {
     /// mso_mdoc only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub doctype: Option<String>,
-    /// dc+sd-jwt: claims description objects at the configuration level
-    /// (Appendix B.2). mso_mdoc: namespace → claim name → metadata.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub claims: Option<serde_json::Value>,
     /// Final §12.2.4: co-present with proof_types_supported (both or
     /// neither — VCIValidateProofTypesCoPresence).
     pub cryptographic_binding_methods_supported: Vec<&'static str>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub display: Vec<Display>,
+    /// Final §12.2.4: `display` and `claims` are members of this object,
+    /// not of the configuration (the ID1 layout) — a wallet reads the
+    /// card name and the claim labels here.
+    pub credential_metadata: CredentialMetadata,
     pub proof_types_supported: BTreeMap<&'static str, ProofType>,
     /// sd-jwt: JWS names; mdoc: COSE integer ids (-7 = ES256).
     pub credential_signing_alg_values_supported: serde_json::Value,
@@ -178,16 +180,6 @@ pub struct CredentialConfiguration {
 #[serde(rename_all = "snake_case")]
 pub struct ProofType {
     pub proof_signing_alg_values_supported: Vec<&'static str>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub struct ClaimMetadataWire {
-    /// Path segments; `None` is an array index (VCTM/TS 119 602 path shape).
-    pub path: Vec<Option<String>>,
-    pub mandatory: bool,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub display: Vec<Display>,
 }
 
 /// mdoc claims carry no `path`: their position in the namespace map *is*
@@ -255,6 +247,9 @@ pub struct EndpointPaths {
     /// Request-encryption key (JWK JSON), published in
     /// credential_request_encryption.jwks.
     pub request_encryption_jwk: Option<serde_json::Value>,
+    /// The issuer-level `display` name (Final §12.2.4). `None` = the
+    /// metadata carries no issuer `display`.
+    pub issuer_display_name: Option<String>,
 }
 
 impl Default for EndpointPaths {
@@ -266,6 +261,7 @@ impl Default for EndpointPaths {
             nonce: Some("nonce"),
             notification: Some("notification"),
             request_encryption_jwk: None,
+            issuer_display_name: None,
         }
     }
 }
@@ -393,6 +389,14 @@ pub fn metadata_from_catalog(
         batch_credential_issuance: paths
             .batch_credential
             .map(|(_, batch_size)| BatchCredentialIssuance { batch_size }),
+        display: paths
+            .issuer_display_name
+            .iter()
+            .map(|name| Display {
+                name: name.clone(),
+                locale: None,
+            })
+            .collect(),
     })
 }
 
@@ -406,22 +410,9 @@ fn sd_jwt_configuration(
         disclosure_policy,
         vct: Some(credential.identifier.clone()),
         doctype: None,
-        claims: Some(
-            serde_json::to_value(
-                credential
-                    .claims
-                    .iter()
-                    .map(claim_metadata_wire)
-                    .collect::<Vec<_>>(),
-            )
-            .expect("claims serialize"),
-        ),
         // Final §12.2.4 + Appendix D: jwt proofs bind via the proof's jwk.
         cryptographic_binding_methods_supported: vec!["jwk"],
-        display: vec![Display {
-            name: credential.label.clone(),
-            locale: None,
-        }],
+        credential_metadata: configuration_metadata(credential),
         proof_types_supported: BTreeMap::from([(
             "jwt",
             ProofType {
@@ -443,19 +434,14 @@ fn mdoc_configuration(
         disclosure_policy,
         vct: None,
         doctype: Some(credential.identifier.clone()),
-        // No `claims` member for mso_mdoc: the conformance suite's
-        // credential_issuer_metadata-1_0.json mso_mdoc branch defines only
-        // `doctype` and `credential_signing_alg_values_supported`
-        // (unevaluatedProperties:false — anything else warns as an unknown
-        // extension), unlike the dc+sd-jwt branch which carries claims.
-        // The catalog's claims still drive issuance (schema gate, elements).
-        claims: None,
         // mdoc device keys arrive as COSE Keys (attestation proofs).
         cryptographic_binding_methods_supported: vec!["cose_key"],
-        display: vec![Display {
-            name: credential.label.clone(),
-            locale: None,
-        }],
+        // Display only: the mso_mdoc metadata carries no `claims`. The
+        // catalog's claims still drive issuance (schema gate, elements).
+        credential_metadata: CredentialMetadata {
+            claims: Vec::new(),
+            ..configuration_metadata(credential)
+        },
         // Both proof types, each with the algs the endpoint's proof
         // path ACTUALLY accepts (ES256, and never a wider set — a
         // metadata lie is its own bug class, the #3 lesson). The `jwt`
@@ -487,14 +473,62 @@ fn mdoc_configuration(
     }
 }
 
-fn claim_metadata_wire(metadata: &ClaimMetadata) -> ClaimMetadataWire {
-    ClaimMetadataWire {
-        path: metadata.path.clone(),
-        mandatory: metadata.mandatory,
-        display: vec![Display {
-            name: metadata.label.clone(),
+/// The configuration's `credential_metadata` (Final §12.2.4): the catalog
+/// document's display members, locales included (a wallet may skip a label
+/// that has none), reduced to the members Final defines there. `svg_id`,
+/// `label` and `rendering` are response-level extensions (issue #41), and
+/// the OIDF suite's metadata schema closes these objects. A name the
+/// document does not localize falls back to the catalog's label.
+fn configuration_metadata(credential: &CredentialType) -> CredentialMetadata {
+    let (mut display, described) = crate::catalog::display_members(credential);
+    for entry in &mut display {
+        entry.rendering = None;
+    }
+    if display.is_empty() {
+        display.push(CredentialMetadataDisplay {
+            name: credential.label.clone(),
             locale: None,
-        }],
+            description: None,
+            logo: None,
+            background_color: None,
+            text_color: None,
+            rendering: None,
+        });
+    }
+    let claims = credential
+        .claims
+        .iter()
+        .map(|claim| {
+            let mut display: Vec<_> = described
+                .iter()
+                .find(|description| description.path == claim.path)
+                .into_iter()
+                .flat_map(|description| &description.display)
+                .filter(|entry| entry.name.is_some())
+                .map(|entry| ClaimDisplayProperties {
+                    label: None,
+                    ..entry.clone()
+                })
+                .collect();
+            if display.is_empty() {
+                display.push(ClaimDisplayProperties {
+                    name: Some(claim.label.clone()),
+                    label: None,
+                    locale: None,
+                });
+            }
+            ClaimDescription {
+                path: claim.path.clone(),
+                svg_id: None,
+                mandatory: claim.mandatory,
+                display,
+            }
+        })
+        .collect();
+    CredentialMetadata {
+        display,
+        claims,
+        auxiliary_data: Vec::new(),
     }
 }
 

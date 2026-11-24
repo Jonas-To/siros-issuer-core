@@ -5516,6 +5516,24 @@ async fn a_to_wallet_opening_refuses_a_plain_response() {
     );
 }
 
+/// `[issuer] display_name` is optional and defaults to unset.
+#[test]
+fn issuer_display_name_is_optional() {
+    let parse = |line: &str| {
+        siros_issuer_service::config::Config::from_toml_str(&format!(
+            "[issuer]\nurl = \"https://i.example.org\"\n{line}\n[catalog]\nstatic_dir = \".\"\n"
+        ))
+        .expect("config parses")
+        .issuer
+        .display_name
+    };
+    assert_eq!(parse(""), None);
+    assert_eq!(
+        parse("display_name = \"Example Issuer\"").as_deref(),
+        Some("Example Issuer")
+    );
+}
+
 /// The knob's semantics (issue #21): default TRUE — encryption is used
 /// as much as possible; wallets can always use it (the suites are
 /// always advertised) and the issuer REQUIRES it unless the deployment
