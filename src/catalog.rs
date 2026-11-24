@@ -12,7 +12,31 @@ use siros_verifier_core::ts11::{Catalog, CredentialType, RegistryDocument};
 /// Build the working catalog from registry documents. Verifier-core
 /// validation errors are mapped to the `catalog_invalid` refusal.
 pub fn build_catalog(documents: Vec<RegistryDocument>) -> Result<Catalog> {
-    Catalog::from_documents(documents).map_err(Error::from)
+    let catalog = Catalog::from_documents(documents).map_err(Error::from)?;
+    for credential in &catalog.credentials {
+        array_claims_declared(credential)?;
+    }
+    Ok(catalog)
+}
+
+/// A path into an array (`null` segment, which verifier-core accepts only
+/// in last position) has no claim of its own: its elements issue with the
+/// array's claim (see [`credential_claims`]). Without that claim it would
+/// be silently absent from every credential, so the catalog is refused.
+fn array_claims_declared(credential: &CredentialType) -> Result<()> {
+    for claim in &credential.claims {
+        let Some((None, array)) = claim.path.split_last() else {
+            continue;
+        };
+        if !credential.claims.iter().any(|other| other.path == array) {
+            return Err(Error::catalog_invalid(format!(
+                "{}: claim path {} addresses the elements of an array whose own path is not declared",
+                credential.identifier,
+                serde_json::json!(claim.path),
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// The dc+sd-jwt credential claims of a subject: every catalog claim the
@@ -32,7 +56,8 @@ pub fn credential_claims(
         for segment in &claim.path {
             // Absent optional claims are skipped (mandatories were gated at
             // session creation), and so is a path into an array: the
-            // array's own claim carries its elements.
+            // array's own claim carries its elements, and `build_catalog`
+            // refuses a catalog that does not declare it.
             let Some(name) = segment.as_deref() else {
                 continue 'claims;
             };

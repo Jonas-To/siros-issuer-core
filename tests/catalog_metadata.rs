@@ -479,3 +479,24 @@ fn nested_claims_issue_at_their_own_path() {
         })
     );
 }
+
+/// Design §8.1: the elements of an array issue with the array's own claim,
+/// so a path into an array whose own path is not declared is a catalog
+/// fault, never a claim that is silently absent. A declared ancestor of the
+/// array is not the array.
+#[test]
+fn a_path_into_an_undeclared_array_is_refused() {
+    for claims in [
+        json!([{"path": ["representatives", null]}]),
+        json!([{"path": ["org"]}, {"path": ["org", "representatives", null]}]),
+        json!([{"path": [null]}]),
+    ] {
+        let error = pid_with_claims(claims.clone()).expect_err(&claims.to_string());
+        assert_eq!(error.code, "catalog_invalid", "{claims}");
+    }
+    pid_with_claims(json!([
+        {"path": ["org", "representatives", null]},
+        {"path": ["org", "representatives"]},
+    ]))
+    .expect("the array's own path is declared");
+}
